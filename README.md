@@ -121,6 +121,8 @@ injected variables win. A missing `.env` file is not an error.
 | `NODE_ENV` | no | inferred | `production` or `development`. See [§6](#6-how-the-server-starts) for how it is inferred when unset. **Set `NODE_ENV=production` on Render.** |
 | `CORS_ORIGIN` | **yes in production** | — | Comma-separated browser origins allowed to call the API and open sockets, e.g. `https://hackgrid.vercel.app,https://hackgrid-git-main-you.vercel.app`. Unset in development means any origin; unset in production means no browser origin. See [§10](#10-cors). |
 | `ADMIN_API_KEY` | no | — | Shared secret that unlocks the organiser routes in production. Unset = organiser routes are closed in production. See [§9](#9-organiser-admin-authentication). |
+| `FIREBASE_PROJECT_ID` | for judging | — | Firebase project id (same as the frontend's `NEXT_PUBLIC_FIREBASE_PROJECT_ID`). Lets the server verify judges' Google sign-in ID tokens. Unset = `/api/judge` answers `503`. No service account is needed. |
+| `HACKGRID_JUDGE_INVITE_CODE` | for `db:seed` | — | The shared code judges type to apply and to open the evaluations. Only its SHA-256 is stored. Required by the seed, ≥ 8 characters, no default. |
 | `HACKGRID_TIER_SECONDS` | no | `420` | How long a tier stays open with nobody bidding (7 min). |
 | `HACKGRID_BID_TIMEOUT_SECONDS` | no | `13` | Anti-snipe window: a tier closes this long after the last accepted bid. |
 | `HACKGRID_REMAINDER_SECONDS` | no | `90` | How long remainder-pod teams get to claim a tier at the frozen price. |
@@ -148,6 +150,7 @@ All commands run from this directory.
 | `npm run build` | Runs `prisma generate`. Not required after `npm install` (postinstall already did it) but harmless; use it as an explicit build step on hosts that want one. |
 | `npm run prisma:generate` | Same as `build`. |
 | `npm run db:push` | `prisma db push` — creates or alters tables to match `prisma/schema.prisma`. Run once per new database and after any schema change. |
+| `npm run db:seed` | Seeds the judging rubric (five criteria) and the judge invitation from `HACKGRID_JUDGE_INVITE_CODE`. Idempotent. Run once per database after `db:push`. |
 | `npm run db:studio` | Prisma Studio, a local GUI over the database. |
 | `npm run check` | Syntax-check the entry point and load the engine; no database needed. |
 
@@ -353,9 +356,40 @@ Team rules enforced here: one team per email, six members maximum, codes are
 | `PATCH` | `/api/admin/capsules/:key/pods/:podId/remainder` | organiser | Flag / unflag the round's lucky-remainder pod. Body `{ flagged: true }` |
 | `DELETE` | `/api/admin/capsules/:key/pods/:podId` | organiser | Delete a manual pod (pending rounds only) |
 
+| `POST` | `/api/admin/judges/applications/:applicationId/approve` | organiser | Approve a judge application: creates the judge profile and an ACTIVE assignment |
+| `POST` | `/api/admin/judges/applications/:applicationId/reject` | organiser | Reject a pending application |
+| `POST` | `/api/admin/judges/:judgeId/suspend` | organiser | Suspend an approved judge (their evaluations are kept) |
+| `POST` | `/api/admin/judges/:judgeId/reinstate` | organiser | Lift a suspension |
+
+`/api/admin/context` also carries `judging`: `{ seeded, applications[], judges[] }`.
+
 `:key` is a capsule key from the catalogue: `track-auction`, `ai-rights`,
 `ai-capability`, `customer-segment`. `:subKey` is a tier key such as
 `developer-tools`.
+
+### `/api/judge` — the judge portal
+
+Every route needs a **verified Firebase ID token** in
+`Authorization: Bearer <token>` (`lib/judge-auth.mjs`; needs
+`FIREBASE_PROJECT_ID`). Identity — uid, name, email — is taken from the
+verified claims, never from the body. `401` when the token is missing or
+invalid, `503` when verification is not configured.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/judge/session` | Where this person stands: `no_profile` (apply), `pending`, `denied`, or `active` with the rubric (`criteria[]`, `maxTotal`) |
+| `POST` | `/api/judge/apply` | Redeem the invitation code. Body `{ code }`. Files a PENDING application the organiser approves on `/admin`. |
+| `GET` | `/api/judge/teams?q=` | Teams matching name, code or any member, with this judge's total where scored |
+| `GET` | `/api/judge/teams/:teamId/review` | Roster, the team's four auction settlements, and this judge's existing evaluation |
+| `PUT` | `/api/judge/teams/:teamId/evaluation` | Submit or replace the evaluation. Body `{ review, scores: { [criterionId]: int } }`. Every active criterion must be within its own min/max. |
+| `POST` | `/api/judge/results-access` | The popup before the evaluations page. Body `{ name, code }`; passes only for an active judge whose profile name matches and whose code is valid. `403` otherwise. |
+| `GET` | `/api/judge/results` | Every submitted evaluation grouped by team, with averages. Needs the token **plus** `x-judge-results-key: <code>` (from the popup), or the organiser's `x-admin-key`. |
+
+Judge data lives in its own tables (`judge_invitations`, `judge_applications`,
+`judge_profiles`, `judge_event_assignments`, `judging_criteria`,
+`evaluations`, `evaluation_scores`) with no foreign key to `users` — a judge
+is identified by their Firebase uid, not by a team roster row. Seed the rubric
+and invitation with `npm run db:seed`.
 
 ### Quick examples
 

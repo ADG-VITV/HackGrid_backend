@@ -26,6 +26,8 @@ import { Server as SocketIOServer } from "socket.io";
 import { createAdminRouter } from "./lib/admin-router.mjs";
 import { createAuctionHub } from "./lib/auction-hub.mjs";
 import { createAuctionRouter } from "./lib/auction-router.mjs";
+import { JUDGE_RESULTS_KEY_HEADER, judgeAuthConfigured } from "./lib/judge-auth.mjs";
+import { createJudgeRouter } from "./lib/judge-router.mjs";
 import { ADMIN_KEY_HEADER, createOrganiserGate } from "./lib/organiser-auth.mjs";
 import { createTeamsRouter } from "./lib/teams-router.mjs";
 
@@ -84,7 +86,7 @@ const corsOptions = {
     callback(null, isAllowedOrigin(origin));
   },
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", ADMIN_KEY_HEADER],
+  allowedHeaders: ["Content-Type", "Authorization", ADMIN_KEY_HEADER, JUDGE_RESULTS_KEY_HEADER],
   credentials: true,
 };
 
@@ -100,7 +102,7 @@ const io = new SocketIOServer(httpServer, {
 });
 
 const hub = createAuctionHub({ connectionString: process.env.DATABASE_URL, io });
-const { organiserOnly, adminKeyConfigured } = createOrganiserGate({ dev });
+const { organiserOnly, isOrganiser, adminKeyConfigured } = createOrganiserGate({ dev });
 
 // ----------------------------------------------------------------- middleware
 
@@ -123,6 +125,7 @@ app.use("/api", (req, _res, nextFn) => {
 app.use("/api/auction", createAuctionRouter({ prisma: hub.prisma, hub, organiserOnly }));
 app.use("/api/teams", createTeamsRouter({ prisma: hub.prisma, dev }));
 app.use("/api/admin", createAdminRouter({ prisma: hub.prisma, hub, organiserOnly }));
+app.use("/api/judge", createJudgeRouter({ prisma: hub.prisma, isOrganiser }));
 
 app.use((_req, res) => {
   res.status(404).json({ status: "error", message: "Not found." });
@@ -225,13 +228,16 @@ await hub.hydrate().catch((error) => console.error("[server] hydrate failed:", e
 httpServer.listen(port, host, () => {
   const shown = host === "0.0.0.0" ? "localhost" : host;
   console.log(`> HackGrid backend ready on http://${shown}:${port} (${process.env.NODE_ENV})`);
-  console.log(`> REST API        http://${shown}:${port}/api/{auction,teams,admin}`);
+  console.log(`> REST API        http://${shown}:${port}/api/{auction,teams,admin,judge}`);
   console.log(`> Socket.IO       ws://${shown}:${port}/socket.io`);
   console.log(
     `> CORS            ${allowedOrigins.length ? allowedOrigins.join(", ") : dev ? "any origin (development)" : "no browser origins (set CORS_ORIGIN)"}`,
   );
   console.log(
     `> Organiser API   ${dev ? "open (development)" : adminKeyConfigured ? "x-admin-key required" : "disabled (set ADMIN_API_KEY to enable)"}`,
+  );
+  console.log(
+    `> Judge portal    ${judgeAuthConfigured ? "Firebase ID tokens verified" : "disabled (set FIREBASE_PROJECT_ID to enable /api/judge)"}`,
   );
 });
 
