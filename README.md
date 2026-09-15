@@ -318,7 +318,7 @@ Requests are logged as `[api] METHOD /path` in the server output.
 | Method | Path | Gate | Purpose |
 | --- | --- | --- | --- |
 | `GET` | `/api/auction/state` | — | Running order and each round's status; `live` is the current round |
-| `GET` | `/api/auction/context/:teamIdOrEmail` | — | One team's view: role of the caller (lead / member), the tier open in its pod, capsules with the team's pod for the live one, and its Resource Manager. **This is what the frontend's Teams and Bidding pages read.** `404` with an error context when the identity is unknown. |
+| `GET` | `/api/auction/context/:teamIdOrEmail` | — | One team's view: role of the caller (lead / member), the tier open in its pod (`currentLot`), what the team has already secured in the live round (`currentResult`, from `settlements`, null while still bidding), every team in its pod with the tier each ended up with (`podSummary`, for the live round or the one that finished most recently — so a pod's results stay readable after its room closes), capsules with the team's pod for the live one, and its Resource Manager (`resources`: every settlement, `spent`, `remaining`, reserve). The payload is identical for the lead and every member — only `viewerRole` differs. **This is what the frontend's Teams and Bidding pages read.** `404` with an error context when the identity is unknown. |
 | `GET` | `/api/auction/teams/:teamIdOrEmail/resources` | — | Just the Resource Manager (budget, spend, reserve, owned tiers) |
 | `POST` | `/api/auction/start` | organiser | Prepare the whole event: draw pods for every round. Opens nothing. |
 | `POST` | `/api/auction/capsules/:key/start` | organiser | Force one round open, out of order. Development convenience. |
