@@ -16,13 +16,15 @@
     "prisma:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "check": "node --check server.mjs && node -e \"import('./lib/auction-engine.mjs').then(()=>console.log('ok'))\""
+    "check": "node --check server.mjs && node -e \"Promise.all([import('./lib/auction-engine.mjs'),import('./lib/judging-engine.mjs')]).then(()=>console.log('ok'))\"",
+    "db:seed": "node prisma/seed.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.10.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
+    "firebase-admin": "^14.4.0",
     "pg": "^8.23.0",
     "prisma": "^7.10.0",
     "socket.io": "^4.8.3"

@@ -60,9 +60,12 @@ model Team {
   podMemberships PodMembership[]
   bids           Bid[]
   settlements    Settlement[]
+  evaluations    Evaluation[]
 
   @@index([leaderId])
   @@index([eventId])
+  /// Target for Evaluation's event-scoped team foreign key.
+  @@unique([id, eventId])
   @@map("teams")
 }
 
@@ -124,8 +127,13 @@ model Event {
   startingBudget Int      @default(10000)
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
 
-  teams    Team[]
-  capsules Capsule[]
+  teams             Team[]
+  capsules          Capsule[]
+  judgeInvitations  JudgeInvitation[]
+  judgeApplications JudgeApplication[]
+  judgeAssignments  JudgeEventAssignment[]
+  judgingCriteria   JudgingCriterion[]
+  evaluations       Evaluation[]
 
   @@map("events")
 }
@@ -309,4 +317,175 @@ model Settlement {
   @@unique([capsuleId, teamId])
   @@index([teamId])
   @@map("settlements")
+}
+
+// ---------------------------------------------------------------------------
+// Judging. Deliberately independent of User: a judge authenticates with
+// Firebase (the backend verifies the ID token), while User stays team-
+// participant data. Every child row carries eventId so the composite foreign
+// keys keep an evaluation, its team and its criteria inside one event.
+// ---------------------------------------------------------------------------
+
+enum JudgeApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum JudgeAssignmentStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum EvaluationStatus {
+  /// Reserved for a save-without-submitting flow; nothing writes it yet.
+  DRAFT
+  SUBMITTED
+}
+
+/// A shared judge-access code for one event, issued by the organiser (see
+/// prisma/seed.mjs). Only its SHA-256 is stored; the plain code is never
+/// persisted. Multi-use: every judge applies with the same code and is then
+/// approved individually.
+model JudgeInvitation {
+  id        String    @id @default(cuid())
+  eventId   String
+  codeHash  String    @unique @db.VarChar(255)
+  expiresAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  event        Event              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  applications JudgeApplication[]
+
+  @@index([eventId])
+  @@map("judge_invitations")
+}
+
+/// A Firebase-authenticated person's request to judge one event. Name and
+/// email are an application-time snapshot of the verified token claims.
+model JudgeApplication {
+  id           String                 @id @default(cuid())
+  eventId      String
+  invitationId String
+  firebaseUid  String                 @db.VarChar(128)
+  name         String                 @db.VarChar(80)
+  email        String                 @db.VarChar(254)
+  status       JudgeApplicationStatus @default(PENDING)
+  submittedAt  DateTime               @default(now()) @db.Timestamptz(3)
+  reviewedAt   DateTime?              @db.Timestamptz(3)
+  judgeId      String?
+
+  event      Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  invitation JudgeInvitation @relation(fields: [invitationId], references: [id], onDelete: Restrict)
+  judge      JudgeProfile?   @relation(fields: [judgeId], references: [id], onDelete: SetNull)
+
+  @@unique([eventId, firebaseUid])
+  @@index([invitationId])
+  @@index([status, submittedAt])
+  @@index([judgeId])
+  @@map("judge_applications")
+}
+
+/// An approved judge. No foreign key to User on purpose; firebaseUid is the
+/// authentication-provider subject the backend verified.
+model JudgeProfile {
+  id          String   @id @default(cuid())
+  firebaseUid String   @unique @db.VarChar(128)
+  name        String   @db.VarChar(80)
+  email       String   @unique @db.VarChar(254)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  applications JudgeApplication[]
+  assignments  JudgeEventAssignment[]
+
+  @@map("judge_profiles")
+}
+
+/// Gives a judge judging privileges for exactly one event. The organiser can
+/// suspend and reinstate it without touching the profile or its evaluations.
+model JudgeEventAssignment {
+  id         String                @id @default(cuid())
+  judgeId    String
+  eventId    String
+  status     JudgeAssignmentStatus @default(ACTIVE)
+  approvedAt DateTime              @default(now()) @db.Timestamptz(3)
+
+  judge       JudgeProfile @relation(fields: [judgeId], references: [id], onDelete: Cascade)
+  event       Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  evaluations Evaluation[]
+
+  @@unique([judgeId, eventId])
+  /// Target for Evaluation's event-scoped judge-assignment foreign key.
+  @@unique([id, eventId])
+  @@index([eventId, status])
+  @@map("judge_event_assignments")
+}
+
+/// The event rubric, as rows rather than fixed columns. Seeded with the five
+/// official criteria (see prisma/seed.mjs); minScore/maxScore are the only
+/// authoritative bounds and a submission's total is the plain sum of scores.
+model JudgingCriterion {
+  id           String   @id @default(cuid())
+  eventId      String
+  key          String   @db.VarChar(40)
+  name         String   @db.VarChar(80)
+  description  String?  @db.Text
+  displayOrder Int
+  minScore     Int      @default(0)
+  maxScore     Int      @default(10)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  event  Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  scores EvaluationScore[]
+
+  @@unique([eventId, key])
+  @@unique([eventId, displayOrder])
+  /// Target for EvaluationScore's event-scoped criterion foreign key.
+  @@unique([id, eventId])
+  @@map("judging_criteria")
+}
+
+/// One judge's review of one team. A judge evaluates any number of teams but
+/// holds one evaluation per team per event; resubmitting replaces it.
+model Evaluation {
+  id                String           @id @default(cuid())
+  eventId           String
+  judgeAssignmentId String
+  teamId            Int
+  review            String?          @db.Text
+  status            EvaluationStatus @default(SUBMITTED)
+  submittedAt       DateTime?        @db.Timestamptz(3)
+  createdAt         DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @db.Timestamptz(3)
+
+  event           Event                @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  judgeAssignment JudgeEventAssignment @relation(fields: [judgeAssignmentId, eventId], references: [id, eventId], onDelete: Restrict)
+  team            Team                 @relation(fields: [teamId, eventId], references: [id, eventId], onDelete: Restrict)
+  scores          EvaluationScore[]
+
+  @@unique([eventId, judgeAssignmentId, teamId])
+  /// Target for EvaluationScore's event-scoped evaluation foreign key.
+  @@unique([id, eventId])
+  @@index([eventId, status])
+  @@index([teamId])
+  @@map("evaluations")
+}
+
+/// One integer score for one criterion inside one evaluation. The shared
+/// eventId makes both composite foreign keys enforce that the score's
+/// evaluation and criterion belong to the same event.
+model EvaluationScore {
+  evaluationId String
+  criterionId  String
+  eventId      String
+  score        Int
+
+  evaluation Evaluation       @relation(fields: [evaluationId, eventId], references: [id, eventId], onDelete: Cascade)
+  criterion  JudgingCriterion @relation(fields: [criterionId, eventId], references: [id, eventId], onDelete: Restrict)
+
+  @@id([evaluationId, criterionId])
+  @@index([criterionId])
+  @@map("evaluation_scores")
 }
