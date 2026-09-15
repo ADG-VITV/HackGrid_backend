@@ -343,7 +343,8 @@ Team rules enforced here: one team per email, six members maximum, codes are
 
 | Method | Path | Gate | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/api/admin/context` | — | Everything the admin page shows: team roster, event status, every round with its pods, seats, settled items and **live presence** (`online` per team, from the hub's rooms) |
+| `POST` | `/api/admin/login` | — | Organiser sign-in. Body `{ name, password }`, checked against the `admins` table (`lib/admin-password.mjs`, salted scrypt hashes — rows are added out of band, never in plain text). `401` on a mismatch. The frontend turns a success into its own signed session cookie; the backend itself stays gated by `ADMIN_API_KEY`. |
+| `GET` | `/api/admin/context` | organiser | Everything the admin page shows: team roster, event status, every round with its pods, seats, settled items, **live presence** (`online` per team, from the hub's rooms) and `judging` (applications, approved judges) |
 | `POST` | `/api/admin/event/start` | organiser | Same as `/api/auction/start` |
 | `POST` | `/api/admin/event/reset` | organiser | Same as `/api/auction/reset` |
 | `POST` | `/api/admin/capsules/:key/start` | organiser | Open the next round (must be the next in order; earlier one closed). Announces `CAPSULE_OPENED` to every socket. |
