@@ -232,9 +232,14 @@ address. A bad handshake is refused with `connect_error` (`Missing or invalid
 podId / teamId.` or `Missing the signed-in email.`).
 
 On connection the hub's `attach()` verifies the email is **the lead of that
-team** and that the team **is seated in that pod**. Anything else gets a
-`ROOM_ERROR` and is disconnected — only the lead's account ever holds a seat,
-so a member opening the page can never count towards the pod's quorum.
+team**, that the team **is seated in that pod**, and that the pod's **round is
+`LIVE`**. Anything else gets a `ROOM_ERROR` and is disconnected — only the
+lead's account ever holds a seat, so a member opening the page can never count
+towards the pod's quorum, and nobody enters a room before the organiser has
+pressed Start on that round (*Start event* only draws the pods; it opens
+nothing). When the organiser resets a round or the event, every socket in the
+affected rooms is ejected the same way, so those leads fall back to the
+bidding page's waiting state.
 
 ### Events
 
