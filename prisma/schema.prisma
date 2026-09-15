@@ -32,6 +32,18 @@ model User {
   @@map("users")
 }
 
+/// A deliberately small, static organiser roster. Passwords are stored as
+/// salted scrypt hashes, never as plaintext credentials.
+model Admin {
+  id           Int      @id @default(autoincrement())
+  name         String   @unique @db.VarChar(80)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("admins")
+}
+
 model Team {
   id        Int      @id @default(autoincrement())
   leaderId  Int
