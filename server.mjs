@@ -237,7 +237,7 @@ httpServer.listen(port, host, () => {
     `> Organiser API   ${dev ? "open (development)" : adminKeyConfigured ? "x-admin-key required" : "disabled (set ADMIN_API_KEY to enable)"}`,
   );
   console.log(
-    `> Judge portal    ${judgeAuthConfigured ? "Firebase ID tokens verified" : "disabled (set FIREBASE_PROJECT_ID to enable /api/judge)"}`,
+    `> Judge portal    ${judgeAuthConfigured() ? "Firebase ID tokens verified" : "disabled (set FIREBASE_PROJECT_ID to enable /api/judge)"}`,
   );
 });
 
