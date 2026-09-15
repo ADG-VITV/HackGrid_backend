@@ -1,0 +1,300 @@
+generator client {
+  provider = "prisma-client-js"
+  // Lets a query with `include` be served by one LATERAL JOIN instead of one
+  // round trip per relation. The database is a long way from the browser, so
+  // round trips are the thing that actually costs time here.
+  previewFeatures = ["relationJoins"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Existing tables. Shape mirrors what is already live in Neon (users, teams,
+// team_members) so nothing here rewrites or drops data. Model names are
+// PascalCase for the client; @@map keeps them pointed at the real tables.
+//
+// Note: leadership lives on teams.leaderId rather than a role column, so
+// "is this member the lead" is derived, not stored per member.
+// ---------------------------------------------------------------------------
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @db.VarChar(254)
+  name      String   @db.VarChar(80)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  memberships TeamMember[]
+  ledTeams    Team[]
+
+  @@map("users")
+}
+
+model Team {
+  id        Int      @id @default(autoincrement())
+  leaderId  Int
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  code      String   @unique @db.VarChar(16)
+  name      String   @db.VarChar(80)
+
+  leader  User         @relation(fields: [leaderId], references: [id])
+  members TeamMember[]
+
+  eventId        String?
+  event          Event?          @relation(fields: [eventId], references: [id])
+  podMemberships PodMembership[]
+  bids           Bid[]
+  settlements    Settlement[]
+
+  @@index([leaderId])
+  @@index([eventId])
+  @@map("teams")
+}
+
+model TeamMember {
+  teamId    Int
+  userId    Int
+  joinOrder Int      @db.SmallInt
+  joinedAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, userId])
+  @@unique([teamId, joinOrder])
+  @@index([userId])
+  @@map("team_members")
+}
+
+// ---------------------------------------------------------------------------
+// Auction tables. All new — nothing below touches the three tables above.
+// ---------------------------------------------------------------------------
+
+enum CapsuleStatus {
+  PENDING
+  LIVE
+  CLOSED
+}
+
+enum PodKind {
+  MAIN
+  REMAINDER
+}
+
+enum LotStatus {
+  PENDING
+  OPEN
+  CLOSED
+}
+
+enum PriceSource {
+  /// Won by holding the top bid when the clock ran out.
+  COMPETITIVE
+  /// Last team standing in a main pod; takes the final tier at list price (rulebook 6.6).
+  AUTO_ASSIGNED
+  /// Nobody bid in the whole window; handed to a random team still without a tier.
+  NO_BIDS_ASSIGNED
+  /// Remainder pod: the main pods' average for that tier (rulebook 7).
+  POD_AVERAGE
+  /// Remainder pod with no main-pod sale to average: the listed price stands in.
+  STARTING_BID_FALLBACK
+}
+
+/// One run of the event. Scopes the uniqueness constraints below so the tables
+/// can hold more than one HackGrid without collisions.
+model Event {
+  id             String   @id @default(cuid())
+  key            String   @unique
+  name           String
+  startingBudget Int      @default(10000)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  teams    Team[]
+  capsules Capsule[]
+
+  @@map("events")
+}
+
+/// An auction round: Track Auction, AI Rights, AI Capability, Customer Segment —
+/// always in that order. `key` matches the tile id in lib/auction-catalog.mjs.
+model Capsule {
+  id            String        @id @default(cuid())
+  eventId       String
+  key           String
+  name          String
+  /// Fixed position in the running order. The order is static: it is the
+  /// array order of lib/auction-catalog.mjs and never changes at runtime.
+  sequenceOrder Int
+  status        CapsuleStatus @default(PENDING)
+  startedAt     DateTime?     @db.Timestamptz(3)
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+
+  event       Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  subCapsules SubCapsule[]
+  pods        Pod[]
+  memberships PodMembership[]
+  settlements Settlement[]
+  tierPrices  RoundTierPrice[]
+
+  @@unique([eventId, key])
+  @@unique([eventId, sequenceOrder])
+  @@map("capsules")
+}
+
+/// A tier inside a capsule. Pod size for a capsule is the count of these rows.
+model SubCapsule {
+  id             String  @id @default(cuid())
+  capsuleId      String
+  key            String
+  name           String
+  /// 1 = most expensive, bid first (rulebook 6).
+  tierRank       Int
+  startingBid    Int
+  /// Null exactly when the tier is auto-assigned to the last team standing.
+  minIncrement   Int?
+  isAutoAssigned Boolean @default(false)
+
+  capsule     Capsule          @relation(fields: [capsuleId], references: [id], onDelete: Cascade)
+  lots        Lot[]
+  settlements Settlement[]
+  tierPrices  RoundTierPrice[]
+
+  @@unique([capsuleId, key])
+  @@unique([capsuleId, tierRank])
+  /// Target for the composite foreign key on Settlement.
+  @@unique([id, capsuleId])
+  @@map("sub_capsules")
+}
+
+/// A bidding group for one capsule. Reshuffled every round (rulebook 5).
+model Pod {
+  id        String   @id @default(cuid())
+  capsuleId String
+  label     String
+  kind      PodKind  @default(MAIN)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  capsule     Capsule         @relation(fields: [capsuleId], references: [id], onDelete: Cascade)
+  memberships PodMembership[]
+  lots        Lot[]
+
+  @@unique([capsuleId, label])
+  /// Target for the composite foreign key on PodMembership.
+  @@unique([id, capsuleId])
+  @@map("pods")
+}
+
+/// Associative entity. Holds the team plus a snapshot of that team's lead,
+/// who is the sole bidder for the round (rulebook 8).
+model PodMembership {
+  id        String @id @default(cuid())
+  podId     String
+  capsuleId String
+  teamId    Int
+  teamName  String
+  teamCode  String
+  leadName  String
+  leadEmail String
+  seat      Int
+
+  pod     Pod     @relation(fields: [podId, capsuleId], references: [id, capsuleId], onDelete: Cascade)
+  capsule Capsule @relation(fields: [capsuleId], references: [id], onDelete: Cascade)
+  team    Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([podId, teamId])
+  /// Exactly one pod per team per capsule (rulebook 5).
+  @@unique([capsuleId, teamId])
+  @@index([teamId])
+  @@map("pod_memberships")
+}
+
+/// One tier being sold inside one pod. This is the grain the timer runs at.
+model Lot {
+  id           String    @id @default(cuid())
+  podId        String
+  subCapsuleId String
+  tierRank     Int
+  status       LotStatus @default(PENDING)
+  openedAt     DateTime? @db.Timestamptz(3)
+  /// Server-authoritative deadline. Every accepted bid pushes it forward.
+  closesAt     DateTime? @db.Timestamptz(3)
+  /// Remainder-pod lots only. The price the winner actually pays, frozen from
+  /// the main pods' average when they finished (rulebook 7). Bids on these
+  /// lots decide who wins, not what they pay.
+  frozenPrice  Int?
+  topBidId     String?
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+
+  pod        Pod         @relation(fields: [podId], references: [id], onDelete: Cascade)
+  subCapsule SubCapsule  @relation(fields: [subCapsuleId], references: [id], onDelete: Cascade)
+  bids       Bid[]
+  settlement Settlement?
+
+  @@unique([podId, subCapsuleId])
+  @@index([podId, tierRank])
+  @@index([status])
+  @@map("lots")
+}
+
+/// Append-only log of every accepted bid. Never updated, never deleted.
+model Bid {
+  id        String   @id @default(cuid())
+  lotId     String
+  teamId    Int
+  amount    Int
+  placedBy  String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  lot  Lot  @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([lotId, amount(sort: Desc)])
+  @@index([teamId])
+  @@map("bids")
+}
+
+/// Average sale price per tier across the main pods of one capsule, frozen at
+/// the moment those pods finished. The remainder pod is priced from this, and
+/// it is a snapshot on purpose: correcting a main-pod result later must not
+/// retroactively change a price the remainder pod already paid (rulebook 7).
+model RoundTierPrice {
+  capsuleId    String
+  subCapsuleId String
+  avgPrice     Int
+  podsCounted  Int
+  source       PriceSource
+  computedAt   DateTime    @default(now()) @db.Timestamptz(3)
+
+  capsule    Capsule    @relation(fields: [capsuleId], references: [id], onDelete: Cascade)
+  subCapsule SubCapsule @relation(fields: [subCapsuleId], references: [id], onDelete: Cascade)
+
+  @@id([capsuleId, subCapsuleId])
+  @@map("round_tier_prices")
+}
+
+/// The settled result of a closed lot.
+model Settlement {
+  id           String      @id @default(cuid())
+  lotId        String      @unique
+  capsuleId    String
+  subCapsuleId String
+  teamId       Int
+  pricePaid    Int
+  priceSource  PriceSource
+  winningBidId String?
+  settledAt    DateTime    @default(now()) @db.Timestamptz(3)
+
+  lot     Lot     @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  capsule Capsule @relation(fields: [capsuleId], references: [id], onDelete: Cascade)
+  team    Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  /// Composite FK: the tier must actually belong to the capsule on this row.
+  subCapsule SubCapsule @relation(fields: [subCapsuleId, capsuleId], references: [id, capsuleId], onDelete: Cascade)
+
+  /// One tier per team per capsule (rulebook 6.4).
+  @@unique([capsuleId, teamId])
+  @@index([teamId])
+  @@map("settlements")
+}

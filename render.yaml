@@ -1,0 +1,25 @@
+# Render Blueprint for the HackGrid backend.
+# Dashboard → New → Blueprint → pick the repository containing this file.
+# Values with `sync: false` are prompted for (secrets); the rest are set here.
+services:
+  - type: web
+    name: hackgrid-backend
+    runtime: node
+    plan: starter            # free spins down after idle and drops sockets; see README §12
+    # rootDir: backend       # uncomment if this directory is NOT the repository root
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    numInstances: 1          # the auction hub keeps timers in memory — never scale out
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATABASE_URL
+        sync: false          # your Postgres connection string
+      - key: CORS_ORIGIN
+        sync: false          # e.g. https://hackgrid.vercel.app
+      - key: ADMIN_API_KEY
+        generateValue: true  # Render generates a random secret; copy it to the frontend's ADMIN_API_KEY
