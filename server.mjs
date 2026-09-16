@@ -216,6 +216,27 @@ io.on("connection", async (socket) => {
     }
   });
 
+  // A lucky pod of one takes a tier at its frozen price instead of bidding.
+  // Same trust boundary as BID: the hub decides whether the pick is legal.
+  socket.on("CLAIM", async (payload, ack) => {
+    const lotId = String(payload?.lotId ?? "");
+
+    try {
+      const result = await hub.handleClaim(socket, { lotId });
+      if (typeof ack === "function") ack(result);
+    } catch (error) {
+      console.error("[socket] claim failed:", error);
+      if (typeof ack === "function") {
+        ack({
+          ok: false,
+          lotId,
+          code: "UNKNOWN",
+          reason: "Server could not record that pick. Try again.",
+        });
+      }
+    }
+  });
+
   socket.on("disconnect", () => {
     hub.detach(socket).catch((error) => console.error("[socket] detach failed:", error));
   });

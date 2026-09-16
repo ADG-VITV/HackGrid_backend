@@ -123,9 +123,9 @@ injected variables win. A missing `.env` file is not an error.
 | `ADMIN_API_KEY` | no | — | Shared secret that unlocks the organiser routes in production. Unset = organiser routes are closed in production. See [§9](#9-organiser-admin-authentication). |
 | `FIREBASE_PROJECT_ID` | for judging | — | Firebase project id (same as the frontend's `NEXT_PUBLIC_FIREBASE_PROJECT_ID`). Lets the server verify judges' Google sign-in ID tokens. Unset = `/api/judge` answers `503`. No service account is needed. |
 | `HACKGRID_JUDGE_INVITE_CODE` | for `db:seed` | — | The shared code judges type to apply and to open the evaluations. Only its SHA-256 is stored. Required by the seed, ≥ 8 characters, no default. |
-| `HACKGRID_TIER_SECONDS` | no | `420` | How long a tier stays open with nobody bidding (7 min). |
+| `HACKGRID_TIER_SECONDS` | no | `300` | How long a main-pod tier stays open with nobody bidding (5 min). Bidding never runs past it. |
 | `HACKGRID_BID_TIMEOUT_SECONDS` | no | `13` | Anti-snipe window: a tier closes this long after the last accepted bid. |
-| `HACKGRID_REMAINDER_SECONDS` | no | `90` | How long remainder-pod teams get to claim a tier at the frozen price. |
+| `HACKGRID_REMAINDER_SECONDS` | no | `180` | Same, for a remainder (lucky) pod's tiers (3 min). |
 
 A minimal production `.env`:
 
@@ -266,6 +266,7 @@ Client → server:
 | Event | Payload | Reply |
 | --- | --- | --- |
 | `BID` | `{ lotId, amount }` | **acknowledgement** `{ ok: true, lotId, amount, bidId }` or `{ ok: false, lotId, code, reason, nextMin? }` |
+| `CLAIM` | `{ lotId }` | remainder pod of **one team** only (`ROOM_STATE.pod.mode === "PICK"`): take that tier at its frozen price. Ack `{ ok: true, lotId, pricePaid }` or `{ ok: false, lotId, code, reason }` with codes from `CLAIM_REJECTED` |
 | `SYNC` | — | a fresh `ROOM_STATE` to this socket only |
 
 Every rule decision happens on the server. The client sends an intent; the
@@ -273,8 +274,33 @@ acknowledgement is the only thing that says whether it counted. Rejection
 codes come from `BID_REJECTED` in `lib/auction-rules.mjs` — `LOT_NOT_OPEN`,
 `LOT_EXPIRED`, `AUTO_ASSIGNED`, `NOT_IN_POD`, `ALREADY_WON`, `ALREADY_TOP`,
 `ALREADY_CLAIMED`, `AWAITING_QUORUM`, `BELOW_MINIMUM`, `OVER_BUDGET`,
-`RESERVE_LOCKED`, `NOT_INTEGER` — plus `UNKNOWN` for anything unexpected
-(a lot outside your pod, a server fault).
+`RESERVE_LOCKED`, `NOT_INTEGER`, `PICK_MODE` — plus `UNKNOWN` for anything
+unexpected (a lot outside your pod, a server fault).
+
+### Remainder (lucky) pods
+
+A round's teams are drawn into pods of *n* (the number of tiers in that
+capsule); the fewer-than-*n* left over form the **remainder pod**. It opens
+only once every main pod has settled, with each tier priced at the average
+the main pods paid for it (`round_tier_prices`; the listed price stands in if
+no main pod sold that tier). `ROOM_STATE.pod.kind` is `"REMAINDER"` and
+`pod.windowSeconds` carries its shorter window.
+
+- **Two or more teams** (`pod.mode: "BID"`): tiers come up one at a time in
+  rank order, exactly like a main pod, on `HACKGRID_REMAINDER_SECONDS`. A bid
+  only decides who takes the tier — the price is fixed. If nobody bids, the
+  tier is **skipped** while the tiers still to come can cover every team that
+  has none (`canSkipUnbidLot` in `lib/auction-rules.mjs`: skip iff
+  `tiersLeftAfter >= teamsWithoutATier`). Past that point an unbid tier is
+  handed to an empty-handed team at random, as in a main pod. Once every team
+  holds a tier the pod's remaining tiers are withdrawn and `POD_COMPLETE`
+  fires.
+- **One team** (`pod.mode: "PICK"`): there is nobody to bid against, so all
+  of its tiers open at once with **no clock**, `awaitingQuorum` is false, and
+  `BID` is refused with `PICK_MODE`. The lead sends `CLAIM { lotId }` for the
+  tier it wants; that settles the lot at the frozen price, withdraws the
+  others and completes the pod. Nothing times this out — an organiser can
+  reset the pod if the team never picks.
 
 ### How the hub and the REST API interact
 
@@ -609,7 +635,9 @@ socket). The Render logs show `[auction] join pod=… team=…` for each seat.
   (`hub.onlineTeamsByPod()`), so it is only accurate for the running instance
   — another reason for one instance.
 - **Timings** can be shortened with the `HACKGRID_*_SECONDS` variables to dry
-  run a whole event in minutes. Restart the server after changing them.
+  run a whole event in minutes. Restart the server after changing them. The
+  defaults are 5 min per main-pod tier, 3 min per remainder-pod tier and a
+  13 s anti-snipe window.
 - **Shared contract files**: `lib/auction-catalog.mjs` (capsules, tiers,
   prices) and `lib/auction-rules.mjs` (timings, rejection codes) are copied
   verbatim into the frontend (`frontend/lib/`) so the UI can render them
