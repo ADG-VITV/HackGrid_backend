@@ -302,6 +302,40 @@ no main pod sold that tier). `ROOM_STATE.pod.kind` is `"REMAINDER"` and
   others and completes the pod. Nothing times this out — an organiser can
   reset the pod if the team never picks.
 
+A round may hold **several** lucky pods (see below). They all open together
+the moment the last main pod settles; a lucky pod's own settlements never
+open a sibling, so a pod the organiser has reset stays held until they press
+Start on it.
+
+### Releasing an absent team (live round)
+
+A main pod's clock only starts once **every** seat is online, so one lead who
+never shows up freezes that pod — and, because the round waits for every
+main pod, the lucky pods and the end of the round with it. The organiser's
+way out is `DELETE /api/admin/capsules/:key/pods/:podId/teams/:teamId` on
+the live round:
+
+- the team is **unseated** for this round (no pod, no room; its lead's
+  bidding page says it was not placed in a pod; it joins the next round as
+  normal);
+- a **main pod** becomes a lucky pod: its lots go back to PENDING (a
+  half-started first tier and its bids are discarded), it stops counting
+  towards "main pods finished", and it opens with the other lucky pods at the
+  frozen averages under the same rules;
+- a **lucky pod that has not started** simply shrinks;
+- a pod left with **nobody** has its tiers withdrawn so it blocks nothing.
+
+Only a pod that has **settled nothing** can be changed; once a tier has sold,
+reset the pod first. A lucky pod that has started must be reset (which holds
+it) before its roster changes. The hub ejects the released lead's socket,
+drops the pod's clock and, if that pod was the last main pod holding the
+round up, opens the lucky pods right away.
+
+If the absent team comes back, seat it in a lucky pod that has not started
+(`POST …/teams`), or reset a started lucky pod to hold it, seat the team, and
+press `…/start`. If it comes back after every lucky pod has finished, it
+sits this round out.
+
 ### How the hub and the REST API interact
 
 The organiser starts a round over HTTP (`POST /api/admin/capsules/:key/start`).
@@ -376,10 +410,11 @@ Team rules enforced here: one team per email, six members maximum, codes are
 | `POST` | `/api/admin/capsules/:key/start` | organiser | Open the next round (must be the next in order; earlier one closed). Announces `CAPSULE_OPENED` to every socket. |
 | `POST` | `/api/admin/capsules/:key/reset` | organiser | Rewind one round to prepared |
 | `POST` | `/api/admin/capsules/:key/sub-capsules/:subKey/reset` | organiser | Rewind one tier within a round |
-| `POST` | `/api/admin/capsules/:key/pods` | organiser | Create a manual pod. Body `{ podNumber: 13, isRemainder: false }` |
-| `POST` | `/api/admin/capsules/:key/pods/:podId/reset` | organiser | Rewind one pod of the live round; the hub restarts its timers |
-| `POST` | `/api/admin/capsules/:key/pods/:podId/teams` | organiser | Seat a team. Body `{ teamId: 42 }` |
-| `DELETE` | `/api/admin/capsules/:key/pods/:podId/teams/:teamId` | organiser | Unseat a team |
+| `POST` | `/api/admin/capsules/:key/pods` | organiser | Create a manual pod. Body `{ podNumber: 13, isRemainder: false }`. In a live round only `isRemainder: true` is accepted; the pod is held until `…/start` |
+| `POST` | `/api/admin/capsules/:key/pods/:podId/reset` | organiser | Rewind one pod of the live round. A main pod restarts at its first tier; a lucky pod is **held** (all tiers pending, no clock) until `…/start` |
+| `POST` | `/api/admin/capsules/:key/pods/:podId/start` | organiser | Open a held lucky pod (reset or created mid-round). Refused until every main pod has finished, since its prices come from them |
+| `POST` | `/api/admin/capsules/:key/pods/:podId/teams` | organiser | Seat a team. Body `{ teamId: 42 }`. Pending round: any pod. Live round: only a lucky pod that has not started, with room (`teams < tiers`), for a team with no seat and no tier in that round |
+| `DELETE` | `/api/admin/capsules/:key/pods/:podId/teams/:teamId` | organiser | Unseat a team. Pending round: plain roster edit. Live round: see *Releasing an absent team* below |
 | `PATCH` | `/api/admin/capsules/:key/pods/:podId/remainder` | organiser | Flag / unflag the round's lucky-remainder pod. Body `{ flagged: true }` |
 | `DELETE` | `/api/admin/capsules/:key/pods/:podId` | organiser | Delete a manual pod (pending rounds only) |
 
